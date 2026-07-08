@@ -23,6 +23,7 @@ class Material:
     unk_d: int
     # tpage/clut/uv bases (field_E..field_16) are 0 on disc; runtime-patched
     file_off: int        # absolute file offset of this 24-byte record
+    name_raw: bytes = b""  # exact 8 bytes incl. padding (writer round-trip)
 
 
 @dataclass
@@ -60,6 +61,7 @@ class ModelHeader:
     normal_offset: int
     flags: int
     meshes: list
+    name_raw: bytes = b""
 
 
 @dataclass
@@ -68,6 +70,7 @@ class Lm:
     models: list         # [ModelHeader]
     model_order: bytes
     base: int            # absolute file offset of the LM header
+    is_loaded: int = 0   # byte 2 of the header (0 on disc)
 
     def model_by_name(self, name):
         for m in self.models:
@@ -77,7 +80,7 @@ class Lm:
 
     @classmethod
     def parse(cls, data, base=0):
-        magic, version, _isloaded, material_count = struct.unpack_from("<BBBB", data, base)
+        magic, version, is_loaded, material_count = struct.unpack_from("<BBBB", data, base)
         if magic != LM_MAGIC or version != LM_VERSION:
             raise ValueError(f"bad LM header {magic:#x} v{version} at {base:#x}")
         materials_off, model_count, _p0, _p1, _p2, model_hdrs_off, model_order_off = \
@@ -88,7 +91,8 @@ class Lm:
             off = base + materials_off + i * 24
             name = decode_name(data[off : off + 8])
             _texptr, field_c, unk_d = struct.unpack_from("<IBB", data, off + 8)
-            materials.append(Material(name, field_c, unk_d, off))
+            materials.append(Material(name, field_c, unk_d, off,
+                                      bytes(data[off : off + 8])))
 
         models = []
         for i in range(model_count):
@@ -100,10 +104,10 @@ class Lm:
             meshes = [cls._parse_mesh(data, base, base + mesh_hdrs_off + j * 24)
                       for j in range(mesh_count)]
             models.append(ModelHeader(name, mesh_count, vertex_offset, normal_offset,
-                                      flags, meshes))
+                                      flags, meshes, bytes(data[off : off + 8])))
 
         model_order = data[base + model_order_off : base + model_order_off + model_count]
-        return cls(materials, models, model_order, base)
+        return cls(materials, models, model_order, base, is_loaded)
 
     @staticmethod
     def _parse_mesh(data, base, off):
