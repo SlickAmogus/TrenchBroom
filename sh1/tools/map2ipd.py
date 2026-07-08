@@ -30,10 +30,19 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from sh1fmt import Ipd, Lm
-from ipd2map import (SCALE, CELL_Q8, v_sub, v_add, v_dot, v_cross, v_len,
+from sh1fmt.ipd import IpdModelInfo, IpdModelInstance, IpdModelBuffer, CELL_Q8
+from sh1fmt.lm import Material, ModelHeader, MeshHeader, Primitive
+from sh1fmt.writer import write_ipd
+from ipd2map import (SCALE, v_sub, v_add, v_dot, v_cross, v_len,
                      v_scale, solve3)
 
 DEFAULT_OUT = r"C:\Claude\silenthill\silent-hill-decomp\pc_port\build\gamedata\load\BG"
+INTERIOR_TAGS = {"SC", "SU", "ER", "HP", "HU"}
+SLOT_CAP_INTERIOR = 90112
+SLOT_CAP_EXTERIOR = 45056
+IDENTITY_ROT = [(4096, 0, 0), (0, 4096, 0), (0, 0, 4096)]
+MAX_MATERIALS = 64        # prim material_idx is 7-bit signed; -1 = untextured
+MAX_PRIMS_PER_MESH = 60   # keeps verts/slots/normals under their u8 caps
 
 FLOAT = r"[-+]?[0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?"
 FACE_RE = re.compile(
@@ -154,16 +163,21 @@ class Compiler:
         self.disc = Path(args.disc)
         self.out = Path(args.out)
         self.allow_plm = args.allow_plm
+        self.full = getattr(args, "full", False)
         map_path = Path(args.map)
         self.area = map_path.stem.upper()
         manifest_path = Path(args.manifest) if args.manifest else \
             map_path.with_name(f"{map_path.stem}.manifest.json")
         self.manifest = json.loads(manifest_path.read_text())
+        self.area = self.manifest.get("area", self.area)
         self.brushes, self.ents = parse_map(map_path)
-        self.containers = {}      # filename -> {"data": bytearray, "parsed": Ipd|Lm, "dirty": bool}
+        self.containers = {}      # filename -> {"data": bytearray, "pristine", "parsed", "dirty"}
         self.instance_count = {}  # (container, model) -> instances in whole area
-        self.stats = {"retextured": 0, "uv": 0, "verts_moved": 0, "flags": 0}
+        self.stats = {"retextured": 0, "uv": 0, "verts_moved": 0, "flags": 0,
+                      "prims_deleted": 0, "prims_added": 0, "materials_added": 0}
         self.skipped = []
+        self.deleted_fids = set()     # --full: faces removed in the editor
+        self.deferred_retex = []      # --full: (rec, tim, row, fid) needing new material
 
     # ---------- container access ----------
 
@@ -223,8 +237,11 @@ class Compiler:
             tim, row = m.group(1), int(m.group(2))
             mat_idx = next((i for i, mt in enumerate(lm.materials) if mt.name == tim), None)
             if mat_idx is None:
-                self.skipped.append(f"face {id_}: TIM {tim} not in material list of "
-                                    f"{rec['container']} (adding materials is v2)")
+                if self.full and rec["container"].endswith(".IPD"):
+                    self.deferred_retex.append((rec, tim, row, id_))
+                else:
+                    self.skipped.append(f"face {id_}: TIM {tim} not in material list "
+                                        f"of {rec['container']} (use --full to add)")
             else:
                 field6 = struct.unpack_from("<H", cont["data"], p_off + 6)[0]
                 new6 = (field6 & 0x80FF) | ((mat_idx & 0x7F) << 8)
@@ -316,7 +333,11 @@ class Compiler:
             fid = int(fid_s)
             hit = faces_by_id.get(fid)
             if hit is None:
-                self.skipped.append(f"face {fid}: deleted in editor (deletion is v2)")
+                if self.full:
+                    self.deleted_fids.add(fid)
+                else:
+                    self.skipped.append(
+                        f"face {fid}: deleted in editor (use --full)")
                 continue
             brush, face = hit
             poly = polygon_of_face(brush, face)
@@ -388,23 +409,284 @@ class Compiler:
                                         if c in corner_uvs}, fid)
 
         self.out.mkdir(parents=True, exist_ok=True)
-        written = []
-        for name, cont in self.containers.items():
-            if cont["dirty"]:
-                orig = (self.disc / "BG" / name).stat().st_size
-                assert len(cont["data"]) == orig, f"{name}: size changed!"
-                (self.out / name).write_bytes(bytes(cont["data"]))
-                written.append(name)
+        if self.full:
+            written = self.run_full()
+        else:
+            written = []
+            for name, cont in self.containers.items():
+                if cont["dirty"]:
+                    orig = (self.disc / "BG" / name).stat().st_size
+                    assert len(cont["data"]) == orig, f"{name}: size changed!"
+                    (self.out / name).write_bytes(bytes(cont["data"]))
+                    written.append(name)
 
         print(f"map2ipd {self.area}: retexture={self.stats['retextured']} "
               f"uvBytes={self.stats['uv']} vertsMoved={self.stats['verts_moved']} "
-              f"transparencyFlags={self.stats['flags']}")
+              f"transparencyFlags={self.stats['flags']}"
+              + (f" primsDeleted={self.stats['prims_deleted']} "
+                 f"primsAdded={self.stats['prims_added']} "
+                 f"materialsAdded={self.stats['materials_added']}"
+                 if self.full else ""))
         print(f"written: {written if written else 'nothing (no changes)'} -> {self.out}")
         for s in self.skipped[:30]:
             print(f"  SKIP: {s}")
         if len(self.skipped) > 30:
             print(f"  ... and {len(self.skipped) - 30} more")
         return 0
+
+    # ---------- --full: topology-changing recompile ----------
+
+    def new_brushes_by_cell(self):
+        """ID-less brushes with textured faces, assigned to an IPD cell by their
+        TrenchBroom group name, else by centroid."""
+        cells = self.manifest["cells"]
+        by_cell = {}
+        for ent in self.ents:
+            group = ent.get("_tb_name", "")
+            for brush in ent["_brushes"]:
+                if any(int(round(f.value)) > 0 for f in brush):
+                    continue
+                faces = [f for f in brush if f.material.startswith("bg/")
+                         or f.material == "special/untextured"]
+                if not faces:
+                    continue
+                cell = group if group in cells else None
+                if cell is None:
+                    pts = [p for f in brush for p in f.points]
+                    cx = int((sum(p[0] for p in pts) / len(pts)) * SCALE // CELL_Q8)
+                    cz = int((sum(p[1] for p in pts) / len(pts)) * SCALE // CELL_Q8)
+                    cell = next((n for n, c in cells.items()
+                                 if c["cellX"] == cx and c["cellZ"] == cz), None)
+                if cell is None:
+                    self.skipped.append("new brush outside every cell of this "
+                                        "area; skipped")
+                    continue
+                by_cell.setdefault(cell, []).append((brush, faces))
+        return by_cell
+
+    def build_new_models(self, ipd, cell_name, brush_faces, lm, next_seq):
+        """Pack new textured faces into fresh single-mesh models; returns the
+        number of prims added."""
+        cell_off = (ipd.cell_x * CELL_Q8, ipd.cell_z * CELL_Q8)
+        pending = []   # (corners_sh, uvs, mat_idx, transparent)
+        for brush, faces in brush_faces:
+            for face in faces:
+                poly = polygon_of_face(brush, face)
+                if poly is None or len(poly) < 3:
+                    self.skipped.append(f"{cell_name}: new face polygon "
+                                        f"degenerate; skipped")
+                    continue
+                mat_idx = -1
+                m = MAT_RE.match(face.material)
+                if m:
+                    tim, row = m.group(1), int(m.group(2))
+                    mat_idx = next((i for i, mt in enumerate(lm.materials)
+                                    if mt.name == tim), None)
+                    if mat_idx is None:
+                        self.skipped.append(f"{cell_name}: material {tim} "
+                                            f"unavailable; face untextured")
+                        mat_idx = -1
+                # triangulate polygons with >4 corners (fan)
+                rings = [poly] if len(poly) <= 4 else \
+                    [[poly[0], poly[i], poly[i + 1]] for i in range(1, len(poly) - 1)]
+                for ring in rings:
+                    sh = []
+                    for p in ring:
+                        w = tb_to_sh_q8(p)
+                        sh.append((int(round(w[0] - cell_off[0])),
+                                   int(round(w[1])),
+                                   int(round(w[2] - cell_off[1]))))
+                    if any(not -32768 <= c <= 32767 for v in sh for c in v):
+                        self.skipped.append(f"{cell_name}: new face vertex out "
+                                            f"of s16 range; skipped")
+                        continue
+                    uvs = []
+                    for p in ring:
+                        u, v = face.uv_at(p)
+                        uvs.append((max(0, min(255, int(round(u)))),
+                                    max(0, min(255, int(round(v))))))
+                    row_clut = int(m.group(2)) * 64 if (m and mat_idx >= 0) else 0
+                    pending.append((sh, uvs, mat_idx, row_clut,
+                                    1 if int(round(face.flags)) & 1 else 0))
+
+        added = 0
+        for chunk_start in range(0, len(pending), MAX_PRIMS_PER_MESH):
+            chunk = pending[chunk_start:chunk_start + MAX_PRIMS_PER_MESH]
+            verts, vmap = [], {}
+            prims, normals, slots = [], [], bytearray()
+
+            def vert_idx(v):
+                if v not in vmap:
+                    vmap[v] = len(verts)
+                    verts.append(v)
+                return vmap[v]
+
+            for sh, uvs, mat_idx, clut, transp in chunk:
+                # perimeter (CCW from front) -> PSX strip order (0,1,3,2);
+                # triangles repeat the last strip index (retail convention)
+                per = [vert_idx(v) for v in sh]
+                if len(per) == 4:
+                    vi = (per[0], per[1], per[3], per[2])
+                    uv = (uvs[0], uvs[1], uvs[3], uvs[2])
+                else:
+                    vi = (per[0], per[1], per[2], per[2])
+                    uv = (uvs[0], uvs[1], uvs[2], uvs[2])
+                # one flat normal per prim; slots are vertex indices
+                e1 = v_sub(sh[1], sh[0])
+                e2 = v_sub(sh[2], sh[0])
+                n = v_cross(e1, e2)
+                ln = v_len(n) or 1.0
+                n8 = tuple(max(-127, min(127, int(round(c * 127.0 / ln)))) for c in n)
+                if n8 == (0, 0, 0):
+                    n8 = (0, -127, 0)
+                corner_n = len(set(vi))
+                li = []
+                for k in range(corner_n):
+                    li.append(len(slots))
+                    slots.append(vi[k])
+                while len(li) < 4:
+                    li.append(li[-1])
+                normals.append((n8[0], n8[1], n8[2], corner_n))
+                prims.append(Primitive(uv, clut, 0, mat_idx, transp, vi,
+                                       tuple(li), 0))
+                added += 1
+
+            mesh = MeshHeader(len(prims), len(verts), len(normals), len(slots),
+                              prims, verts, normals, bytes(slots), 0, 0, 0)
+            name = f"TB{next_seq:05d}"[:8]
+            next_seq += 1
+            lm.models.append(ModelHeader(name, 1, 0, 0, 0, [mesh]))
+            lm.model_order += bytes([len(lm.models) - 1])
+            ipd.model_infos.append(IpdModelInfo(0, name))
+        return added, next_seq
+
+    def run_full(self):
+        """Recompile every cell structurally: deferred retextures on new
+        materials, prim deletions, new brushes as new models, then serialize
+        through the byte-exact writer."""
+        new_by_cell = self.new_brushes_by_cell()
+        interior = self.area in INTERIOR_TAGS
+        cap = SLOT_CAP_INTERIOR if interior else SLOT_CAP_EXTERIOR
+        written = []
+
+        # prim -> [face ids], for the both-halves deletion rule
+        prim_fids = {}
+        for fid_s, rec in self.manifest["faces"].items():
+            key = (rec["container"], rec["model"], rec["mesh"], rec["prim"])
+            prim_fids.setdefault(key, []).append(int(fid_s))
+
+        for cell_name in self.manifest["cells"]:
+            name = cell_name + ".IPD"
+            cont = self.container(name)
+            ipd = Ipd.parse(bytes(cont["data"]))
+            lm = ipd.lm
+            changed = cont["dirty"]
+            topo = False
+
+            # 1. new materials (deferred retextures + new-brush needs)
+            needed = {}
+            for rec, tim, row, fid in self.deferred_retex:
+                if rec["container"] == name:
+                    needed.setdefault(tim, []).append((rec, row, fid))
+            for tim in list(needed) + [
+                    m.group(1)
+                    for _, faces in new_by_cell.get(cell_name, [])
+                    for f in faces
+                    if (m := MAT_RE.match(f.material))]:
+                if any(mt.name == tim for mt in lm.materials):
+                    continue
+                if not (self.disc / "BG" / f"{tim}.TIM").exists():
+                    self.skipped.append(f"{cell_name}: no such TIM {tim}")
+                    needed.pop(tim, None)
+                    continue
+                if len(lm.materials) >= MAX_MATERIALS:
+                    self.skipped.append(f"{cell_name}: material list full "
+                                        f"({MAX_MATERIALS}); cannot add {tim}")
+                    needed.pop(tim, None)
+                    continue
+                lm.materials.append(Material(tim, 0, 0, 0))
+                self.stats["materials_added"] += 1
+                changed = True
+
+            # 2. deferred retextures, structurally
+            for tim, entries in needed.items():
+                idx = next((i for i, mt in enumerate(lm.materials)
+                            if mt.name == tim), None)
+                if idx is None:
+                    continue
+                for rec, row, fid in entries:
+                    model = lm.model_by_name(rec["model"])
+                    prim = model.meshes[rec["mesh"]].prims[rec["prim"]]
+                    prim.material_idx = idx
+                    prim.clut = row * 64
+                    self.stats["retextured"] += 1
+                    changed = True
+
+            # 3. deletions (a prim goes only when ALL its faces were deleted)
+            doomed = {}
+            for (cname, mname, mesh_i, prim_i), fids in prim_fids.items():
+                if cname != name:
+                    continue
+                gone = [f for f in fids if f in self.deleted_fids]
+                if not gone:
+                    continue
+                if len(gone) < len(fids):
+                    self.skipped.append(
+                        f"{cell_name}: only one half of prim "
+                        f"{mname}/{mesh_i}/{prim_i} deleted; keeping it")
+                    continue
+                doomed.setdefault((mname, mesh_i), []).append(prim_i)
+            for (mname, mesh_i), prim_idxs in doomed.items():
+                model = lm.model_by_name(mname)
+                for pi in sorted(prim_idxs, reverse=True):
+                    del model.meshes[mesh_i].prims[pi]
+                    self.stats["prims_deleted"] += 1
+                changed = topo = True
+
+            # 4. new brushes -> new models + one shared buffer
+            if cell_name in new_by_cell:
+                seq = 0
+                n_before = len(lm.models)
+                added, seq = self.build_new_models(
+                    ipd, cell_name, new_by_cell[cell_name], lm, seq)
+                if added:
+                    self.stats["prims_added"] += added
+                    instances = [
+                        IpdModelInstance(len(ipd.model_infos) - (len(lm.models) - n_before) + k,
+                                         IDENTITY_ROT, (0, 0, 0), 0)
+                        for k in range(len(lm.models) - n_before)]
+                    ipd.model_buffers.append(IpdModelBuffer(
+                        len(instances), 0, 1, (0, CELL_Q8, 0, CELL_Q8),
+                        instances, [], [(0, CELL_Q8, 0, CELL_Q8)]))
+                    ipd.model_order += bytes([len(ipd.model_buffers) - 1])
+                    changed = topo = True
+
+            if topo:
+                # conservative draw table: every subcell draws every buffer
+                n = len(ipd.model_order)
+                ipd.draw_table = bytes([0, n] * 25)
+
+            if not changed:
+                continue
+
+            body = write_ipd(ipd)
+            out_bytes = body + bytes((-len(body)) % 256)
+            orig_size = len(cont["pristine"])
+            if out_bytes == cont["pristine"]:
+                continue
+            if len(out_bytes) > orig_size:
+                print(f"  WARNING {name}: output {len(out_bytes)} B exceeds the "
+                      f"original file size {orig_size} B — the PC port CANNOT "
+                      f"load this until the file-table/size-cap work lands "
+                      f"(docs/PC_PORT_INTEGRATION.md)")
+            if len(out_bytes) > cap:
+                print(f"  WARNING {name}: output {len(out_bytes)} B exceeds the "
+                      f"{'interior' if interior else 'exterior'} chunk-slot cap "
+                      f"{cap} B — the game cannot stream it even after the "
+                      f"file-table fix")
+            (self.out / name).write_bytes(out_bytes)
+            written.append(name)
+        return written
 
 
 def main():
@@ -414,6 +696,10 @@ def main():
     ap.add_argument("--disc", default=r"C:\Claude\silenthill\disc_extract")
     ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--allow-plm", action="store_true")
+    ap.add_argument("--full", action="store_true",
+                    help="topology-changing recompile: new/deleted brushes and "
+                         "new materials; output size may exceed the original "
+                         "(see docs/PC_PORT_INTEGRATION.md for port support)")
     args = ap.parse_args()
     sys.exit(Compiler(args).run())
 
