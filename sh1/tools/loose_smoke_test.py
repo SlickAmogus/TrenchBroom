@@ -42,23 +42,32 @@ def stage1():
 
 
 def stage2():
+    """Stripe EVERY DRU sheet red so the signal is visible from anywhere in the
+    sewer — a single painted patch on one sheet can end up in one far corner
+    of the map depending on which faces sample those texels."""
     LOOSE.mkdir(parents=True, exist_ok=True)
-    from PIL import Image
-    tim_raw = (BG / "DRU01F.TIM").read_bytes()
-    tim = Tim.parse(tim_raw)
-    rgba, _ = tim.rgba_for_clut_row(0)
-    img = Image.frombytes("RGBA", (tim.width, tim.height), rgba)
-    for y in range(32, 96):
-        for x in range(32, 96):
-            img.putpixel((x, y), (248, 0, 0, 255))
-    tmp = LOOSE / "_dru01f_red.png"
-    img.save(tmp)
     import subprocess
-    subprocess.run([sys.executable, str(Path(__file__).parent / "png2tim.py"),
-                    "--png", str(tmp), "--tim", str(BG / "DRU01F.TIM"),
-                    "-o", str(LOOSE / "DRU01F.TIM")], check=True)
+    from PIL import Image
+    for tim_path in sorted(BG.glob("DRU*.TIM")):
+        tim = Tim.parse(tim_path.read_bytes())
+        rgba, _ = tim.rgba_for_clut_row(0)
+        img = Image.frombytes("RGBA", (tim.width, tim.height), rgba)
+        for y in range(0, tim.height, 32):
+            for yy in range(y, min(y + 8, tim.height)):
+                for x in range(tim.width):
+                    if img.getpixel((x, yy))[3]:  # keep transparency intact
+                        img.putpixel((x, yy), (248, 0, 0, 255))
+        tmp = LOOSE / "_stripe.png"
+        img.save(tmp)
+        subprocess.run([sys.executable, str(Path(__file__).parent / "png2tim.py"),
+                        "--png", str(tmp), "--tim", str(tim_path),
+                        "-o", str(LOOSE / tim_path.name)], check=True,
+                       capture_output=True)
+        print(f"  striped {tim_path.name}")
     tmp.unlink()
-    print("stage 2: DRU01F.TIM with red square -> expect red patch on sewer walls.")
+    print("stage 2: ALL DRU sheets striped red -> every wall/floor/ceiling in "
+          "the sewer should show horizontal red bands. Re-enter the area to "
+          "reload chunks.")
 
 
 def stage3():
