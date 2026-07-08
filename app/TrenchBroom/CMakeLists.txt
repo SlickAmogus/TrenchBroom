@@ -231,7 +231,13 @@ endif()
 
 # Generate a small stripped PDB for release builds so we get stack traces with symbols
 if(COMPILER_IS_MSVC)
-    set_target_properties(TrenchBroom PROPERTIES LINK_FLAGS_RELEASE "/DEBUG /PDBSTRIPPED:app/TrenchBroom/TrenchBroom-stripped.pdb /PDBALTPATH:TrenchBroom-stripped.pdb")
+    # The stripped PDB path must be absolute: the linker's working directory
+    # differs between the Ninja generator (build root) and the Visual Studio
+    # generator (vcxproj dir), so a relative path breaks one of them (LNK1201).
+    target_link_options(TrenchBroom PRIVATE
+        "$<$<CONFIG:Release>:/DEBUG>"
+        "$<$<CONFIG:Release>:/PDBSTRIPPED:$<TARGET_FILE_DIR:TrenchBroom>/TrenchBroom-stripped.pdb>"
+        "$<$<CONFIG:Release>:/PDBALTPATH:TrenchBroom-stripped.pdb>")
 endif()
 
 if(${CMAKE_SYSTEM_NAME} MATCHES "Linux|FreeBSD")
