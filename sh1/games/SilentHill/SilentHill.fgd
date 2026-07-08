@@ -1,0 +1,12 @@
+// Silent Hill 1 entity definitions for TrenchBroom.
+// v1: geometry provenance lives in per-face attributes (see docs/DESIGN.md);
+// these entities cover the non-brush data found inside IPD files.
+
+@SolidClass = worldspawn : "World entity" []
+
+@PointClass size(-16 -16 0, 16 16 96) color(80 220 80) = sh_billboard :
+    "IPD vegetation/sprite billboard (drawn by Gfx_BillboardDraw in-game)"
+[
+    bbtype(integer) : "Billboard type" : 0 : "0 or 1 - selects the sprite kind"
+    cell(string) : "Owning IPD cell" : "" : "Set by ipd2map; used by map2ipd to write back"
+]
