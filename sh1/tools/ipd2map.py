@@ -26,8 +26,11 @@ from sh1fmt import Ipd, Lm, Tim
 SCALE = 4.0          # Q8 units per TB unit
 CELL_Q8 = 10240
 THICKNESS = 8.0      # prism depth in TB units (= 32 Q8 = 0.125 SH unit)
-EPS_PLANAR = 0.5     # TB units; quad planarity tolerance
-EPS_UV = 0.75        # texels; quad affine-UV tolerance
+# Merged quads must be EXACTLY planar/affine (tolerances = fp noise only):
+# a brush face is a perfect plane, so any real deviation would deform geometry,
+# and UV deviation >= 0.5 texel would break byte-exact map2ipd round-trips.
+EPS_PLANAR = 1e-3    # TB units; quad planarity tolerance
+EPS_UV = 0.45        # texels; quad affine-UV tolerance
 SKIP_MAT = "special/skip"
 UNTEX_MAT = "special/untextured"
 
