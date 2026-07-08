@@ -27,6 +27,7 @@
 #include "mdl/LoadM8Texture.h"
 #include "mdl/LoadMipTexture.h"
 #include "mdl/LoadShaders.h"
+#include "mdl/LoadTimTexture.h"
 #include "mdl/LoadWalTexture.h"
 #include "mdl/MaterialUtils.h"
 #include "mdl/Palette.h"
@@ -96,6 +97,13 @@ Result<gl::Texture> loadTexture(
     return fs.openFile(path) | kdl::and_then([&](auto file) {
              auto reader = file->reader().buffer();
              return loadDdsTexture(reader);
+           });
+  }
+  else if (extension == ".tim")
+  {
+    return fs.openFile(path) | kdl::and_then([&](auto file) {
+             auto reader = file->reader().buffer();
+             return loadTimTexture(reader);
            });
   }
   else if (isSupportedFreeImageExtension(extension))
