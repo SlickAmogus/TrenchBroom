@@ -11,17 +11,42 @@ original code paths remain intact; every change is an `#ifdef SH_PC_PORT`
 addition, preferably in pc_port/ or PsyCross, never a behavior change when the
 feature is off.
 
-## 0. Precondition: validate the loose-file loader at all
+## 0. Precondition: validate the loose-file loader - DONE
 
-`allow_loose_files` (`src/main/fsqueue_3.c:227-383`, config `pc_port/config.cfg:129-135`)
-has NEVER been exercised in game. Before building on it, run the staged smoke
-test: `sh1/tools/loose_smoke_test.py` stages 1-3 (unmodified IPD copy → red
+`allow_loose_files` is **confirmed working in game** (user-verified: a compiled
+IPD edit and replaced textures both showed up in the otherworld sewer). The
+staged smoke test remains useful for re-checking after port changes: `sh1/tools/loose_smoke_test.py` stages 1-3 (unmodified IPD copy → red
 TIM → real 13-byte IPD edit), each verified in the otherworld sewer
 (map6_s03). Stage 1 rendering normally proves the read path; log line visible
 with `SH_LOOSE_VERBOSE=1`. Known caveat to verify: the probe path is
 CWD-relative (`"gamedata/load/%s/%s"`, fsqueue_3.c:281) — launching the exe
 from another directory silently misses; consider switching to
 `PcPort_GetGameDataPath()`.
+
+## 0b. What changed in the port since this spec was written
+
+Re-read before implementing anything below; line numbers here predate it.
+
+- **IPD header validation** (decomp `f9caf3432`): `IpdHeader_FixOffsets_PC` now
+  bounds-checks every section offset and requires the LM magic+version at
+  `lmHdrOff` as a tail-arrival sentinel. A loose IPD that fails is skipped and
+  retried every frame - i.e. a bad compile looks like "nothing happened", with
+  `[IPD-VAL]` lines in the log. The converter twin of this check is
+  `sh1/tools/validate_port_compat.py`; run it on compiler output.
+- **Oversized loose models exist now for CHARA**: `pc_port/src/pc_big_lm.c`
+  (ILM) and `pc_big_tmd.c` (item TMD) register PC-owned buffers whose capacity
+  lifts the loose-file size gate via `Pc_BigLm_DestCapacity` in
+  `Fs_QueueTickRead`. **This is the working in-tree template for item 1 below** -
+  an IPD equivalent would follow the same shape (registry keyed by file index,
+  calloc'd buffer, capacity hook) rather than needing new invention.
+- **Shared LM validator**: `pc_port/include/lm_validate.h` validates raw
+  ILM/PLM bytes and is explicitly written to be a converter twin. If `map2ipd
+  --full` ever emits PLM data, validate against these rules.
+- **Per-CLUT-row PNG/DDS texture overrides** are live
+  (`gamedata/load/BG/<SHEET>.TIM.p<NN>.png`), which removes the palette and
+  resolution limits for texture modding entirely. `sh1/tools/textures_to_game.py`
+  targets this path; item 3's "custom textures" need is largely met for BG
+  sheets already.
 
 ## 1. Remove the loose-file size cap
 

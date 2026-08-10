@@ -15,8 +15,8 @@ skipped — that is the v2 full-recompile feature.
 
 Usage:
   python map2ipd.py --map <AREA>.map [--manifest <AREA>.manifest.json]
-                    [--disc C:/Claude/silenthill/disc_extract]
-                    [--out <dir>]        # default: pc_port/build/gamedata/load/BG
+                    [--disc <extracted disc>]
+                    [--out <dir>]        # default: <port>/gamedata/load/BG
                     [--allow-plm]        # permit edits to the shared _GLB.PLM
 Run it from TrenchBroom via Run > Compile Map (RunTool with ${MAP_FULL_NAME}).
 """
@@ -709,14 +709,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--map", required=True)
     ap.add_argument("--manifest", default=None)
-    ap.add_argument("--disc", default=r"C:\Claude\silenthill\disc_extract")
-    ap.add_argument("--out", default=DEFAULT_OUT)
+    ap.add_argument("--disc", default=None,
+                    help="extracted disc assets (dir containing BG/)")
+    ap.add_argument("--out", default=None,
+                    help="where compiled files go (default <port>/gamedata/load/BG)")
     ap.add_argument("--allow-plm", action="store_true")
     ap.add_argument("--full", action="store_true",
                     help="topology-changing recompile: new/deleted brushes and "
                          "new materials; output size may exceed the original "
                          "(see docs/PC_PORT_INTEGRATION.md for port support)")
     args = ap.parse_args()
+    from sh1fmt import paths
+    args.disc = paths.disc_dir(args.disc)
+    args.out = paths.loose_bg_dir(args.out)
     sys.exit(Compiler(args).run())
 
 

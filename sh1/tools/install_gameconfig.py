@@ -18,8 +18,14 @@ from pathlib import Path
 
 GAMES_SRC = Path(__file__).parent.parent / "games" / "SilentHill"
 TOOLS_DIR = Path(__file__).parent.resolve()
-DEFAULT_ENGINE = (r"C:\Claude\silenthill\silent-hill-decomp\pc_port\build"
-                  r"\SilentHillPC.exe")
+
+sys.path.insert(0, str(TOOLS_DIR))
+from sh1fmt import paths
+
+
+def default_engine():
+    port = paths.port_dir(required=False)
+    return str(port / "SilentHillPC.exe") if port else ""
 
 
 def compilation_profiles():
@@ -67,10 +73,14 @@ def engine_profiles(engine_path):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--gamedir", default=r"C:\Claude\silenthill\sh1editor")
-    ap.add_argument("--engine", default=DEFAULT_ENGINE)
+    ap.add_argument("--gamedir", default=None)
+    ap.add_argument("--engine", default=None)
     ap.add_argument("--no-profiles", action="store_true")
     args = ap.parse_args()
+    if args.gamedir is None:
+        args.gamedir = str(paths.gamedir())
+    if args.engine is None:
+        args.engine = default_engine()
 
     appdata = Path(os.environ["APPDATA"]) / "TrenchBroom"
     dest = appdata / "games" / "SilentHill"

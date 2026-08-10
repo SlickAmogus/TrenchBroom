@@ -28,8 +28,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from sh1fmt import Tim
 
-BG = Path(r"C:\Claude\silenthill\disc_extract\BG")
-LOOSE = Path(r"C:\Claude\silenthill\silent-hill-decomp\pc_port\build\gamedata\load\BG")
+from sh1fmt import paths
+
+BG = paths.bg_dir()
+LOOSE = paths.loose_bg_dir()
 
 
 def stage1():

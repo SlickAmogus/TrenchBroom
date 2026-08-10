@@ -14,7 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 from sh1fmt import Ipd, Lm
 
-BG = Path(r"C:\Claude\silenthill\disc_extract\BG")
+from sh1fmt import paths
+BG = paths.bg_dir()
 AREAS = ["THR", "SPR", "SPU", "RSR", "RSU", "APR", "APU", "DRU", "DR",
          "SC", "SU", "ER", "HP", "HU"]
 AREA_TO_MAPS = {

@@ -2,8 +2,9 @@
 map: Quake3 (Valve) .map + PNG material collection + provenance manifest.
 
 Usage:
-  python ipd2map.py --area DRU [--disc C:/Claude/silenthill/disc_extract]
-                    [--gamedir C:/Claude/silenthill/sh1editor] [--flip-winding]
+  python ipd2map.py --area DRU [--disc <extracted disc>] [--gamedir <out>]
+                    [--flip-winding]
+Paths default to sh1paths.json / auto-detection (see setup_paths.py).
 
 Coordinate convention (docs/DESIGN.md): TB = (SH.x, SH.z, -SH.y) / 4, i.e.
 1 TB unit = 4 Q8 units; cell = 2560 TB, subcell = 512 TB, 1 SH unit = 64 TB.
@@ -387,12 +388,16 @@ class Converter:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--area", required=True, help="area tag, e.g. DRU, HP, THR")
-    ap.add_argument("--disc", default=r"C:\Claude\silenthill\disc_extract")
-    ap.add_argument("--gamedir", default=r"C:\Claude\silenthill\sh1editor")
+    ap.add_argument("--disc", default=None,
+                    help="extracted disc assets (dir containing BG/)")
+    ap.add_argument("--gamedir", default=None,
+                    help="output dir for maps/ and textures/")
     ap.add_argument("--flip-winding", action="store_true",
                     help="reverse front-face winding if faces come out inverted")
     args = ap.parse_args()
-    Converter(args.disc, args.gamedir, args.area, args.flip_winding).convert()
+    from sh1fmt import paths
+    Converter(paths.disc_dir(args.disc), paths.gamedir(args.gamedir),
+              args.area, args.flip_winding).convert()
 
 
 if __name__ == "__main__":

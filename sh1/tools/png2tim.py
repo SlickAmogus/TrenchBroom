@@ -181,7 +181,8 @@ def main():
         off += clut_block_size
     out[off + 12 : off + 12 + len(pixel_bytes)] = pixel_bytes
 
-    out_path = Path(args.out) if args.out else Path(DEFAULT_LOOSE) / tim_path.name
+    from sh1fmt import paths
+    out_path = Path(args.out) if args.out else paths.loose_bg_dir() / tim_path.name
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_bytes(bytes(out))
 

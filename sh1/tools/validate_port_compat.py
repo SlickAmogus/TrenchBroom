@@ -16,7 +16,8 @@ import struct
 import sys
 from pathlib import Path
 
-DISC = Path(r"C:\Claude\silenthill\disc_extract\BG")
+from sh1fmt import paths
+DISC = paths.bg_dir()
 IPD_MAGIC = 0x14
 LM_MAGIC = 0x30
 LM_VERSION = 6
