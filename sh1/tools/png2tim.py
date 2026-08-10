@@ -77,7 +77,7 @@ def build_palette(tim, row, keys_needed, warn):
             if color_key(e) not in used or assigned[color_key(e)] != i]
     if len(missing) > len(free):
         warn(f"palette overflow: {len(missing)} new colors, {len(free)} free "
-             f"slots — image will be quantized")
+             f"slots - image will be quantized")
         return None
     for k in missing:
         i = free.pop(0)
@@ -191,7 +191,7 @@ def main():
     print(f"wrote {out_path} ({len(out)} bytes, original {len(raw)}"
           f"{', byte-identical' if same else ''})")
     if len(out) != len(raw):
-        print("WARN: size differs from original — loose loader requires <= "
+        print("WARN: size differs from original - loose loader requires <= "
               "original sector-aligned size")
 
 

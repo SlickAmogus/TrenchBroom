@@ -30,7 +30,6 @@ from sh1fmt import Tim
 
 BG = Path(r"C:\Claude\silenthill\disc_extract\BG")
 LOOSE = Path(r"C:\Claude\silenthill\silent-hill-decomp\pc_port\build\gamedata\load\BG")
-FILES = ["DRU0000.IPD", "DRU01F.TIM"]
 
 
 def stage1():
@@ -94,11 +93,17 @@ def stage3():
 
 
 def clean():
-    for f in FILES:
-        p = LOOSE / f
-        if p.exists():
-            p.unlink()
-            print(f"removed {p}")
+    """Remove every file any stage can produce. Stage 2 writes one TIM per DRU
+    sheet, so a fixed filename list would strand a dozen striped textures in the
+    live game."""
+    removed = 0
+    for p in sorted(LOOSE.glob("DRU*.IPD")) + sorted(LOOSE.glob("DRU*.TIM")) \
+            + sorted(LOOSE.glob("_stripe.png")):
+        p.unlink()
+        print(f"removed {p.name}")
+        removed += 1
+    print(f"{removed} file(s) removed from {LOOSE}"
+          if removed else f"nothing to clean in {LOOSE}")
 
 
 def main():

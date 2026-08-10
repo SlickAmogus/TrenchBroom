@@ -428,11 +428,27 @@ class Compiler:
                  f"materialsAdded={self.stats['materials_added']}"
                  if self.full else ""))
         print(f"written: {written if written else 'nothing (no changes)'} -> {self.out}")
-        for s in self.skipped[:30]:
-            print(f"  SKIP: {s}")
-        if len(self.skipped) > 30:
-            print(f"  ... and {len(self.skipped) - 30} more")
+        self.report_skips()
         return 0
+
+    def report_skips(self):
+        """Collapse repeated skips to their shared reason. Thousands of
+        identical per-face messages (a shared PLM, a missing material) would
+        otherwise bury the one-off errors that actually need attention."""
+        groups = {}
+        for s in self.skipped:
+            # strip the leading "face <n>: " / "<CELL>: " subject
+            reason = re.sub(r"^(face \d+|[A-Z0-9_]+): ", "", s)
+            groups.setdefault(reason, []).append(s)
+        for reason, items in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+            if len(items) == 1:
+                print(f"  SKIP: {items[0]}")
+            else:
+                subjects = [re.match(r"^(face \d+|[A-Z0-9_]+):", i) for i in items]
+                names = [m.group(1) for m in subjects if m][:3]
+                more = f" (+{len(items) - len(names)} more)" if len(items) > len(names) else ""
+                print(f"  SKIP x{len(items)}: {reason}")
+                print(f"          e.g. {', '.join(names)}{more}")
 
     # ---------- --full: topology-changing recompile ----------
 
@@ -676,13 +692,13 @@ class Compiler:
                 continue
             if len(out_bytes) > orig_size:
                 print(f"  WARNING {name}: output {len(out_bytes)} B exceeds the "
-                      f"original file size {orig_size} B — the PC port CANNOT "
+                      f"original file size {orig_size} B - the PC port CANNOT "
                       f"load this until the file-table/size-cap work lands "
                       f"(docs/PC_PORT_INTEGRATION.md)")
             if len(out_bytes) > cap:
                 print(f"  WARNING {name}: output {len(out_bytes)} B exceeds the "
                       f"{'interior' if interior else 'exterior'} chunk-slot cap "
-                      f"{cap} B — the game cannot stream it even after the "
+                      f"{cap} B - the game cannot stream it even after the "
                       f"file-table fix")
             (self.out / name).write_bytes(out_bytes)
             written.append(name)
